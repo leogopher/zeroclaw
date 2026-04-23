@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head>
+    <title>ZeroClaw Daily Digest Feeds</title>
+  </head>
+  <body>
+    <outline text="AI Agents &amp; Claude Code" title="AI Agents &amp; Claude Code">
+      <outline type="rss" text="Simon Willison" xmlUrl="https://simonwillison.net/atom/everything/" />
+      <outline type="rss" text="Anthropic News" xmlUrl="https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_news_rss.xml" />
+      <outline type="rss" text="OpenAI Blog" xmlUrl="https://openai.com/news/rss.xml" />
+      <outline type="rss" text="LangChain Blog" xmlUrl="https://blog.langchain.com/rss/" />
+      <outline type="rss" text="HN: Claude Code" xmlUrl="https://hnrss.org/newest?q=claude+code" />
+      <outline type="rss" text="HN: AI Agents (50+ pts)" xmlUrl="https://hnrss.org/newest?q=AI+agents&amp;points=50" />
+    </outline>
+    <outline text="AI Image Generation" title="AI Image Generation">
+      <outline type="rss" text="ComfyUI Blog" xmlUrl="https://blog.comfy.org/feed" />
+      <outline type="rss" text="Stability AI" xmlUrl="https://stability.ai/blog?format=rss" />
+      <outline type="rss" text="CivitAI (OpenRSS)" xmlUrl="https://openrss.org/civitai.com/articles" />
+    </outline>
+    <outline text="General AI &amp; Tech" title="General AI &amp; Tech">
+      <outline type="rss" text="TechCrunch AI" xmlUrl="https://techcrunch.com/category/artificial-intelligence/feed/" />
+      <outline type="rss" text="Ars Technica AI" xmlUrl="https://arstechnica.com/ai/feed/" />
+      <outline type="rss" text="The Verge AI" xmlUrl="https://www.theverge.com/rss/ai-artificial-intelligence/index.xml" />
+      <outline type="rss" text="MIT Tech Review AI" xmlUrl="https://www.technologyreview.com/topic/artificial-intelligence/feed" />
+    </outline>
+  </body>
+</opml>

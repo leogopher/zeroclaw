@@ -1,0 +1,13 @@
+services:
+  anki:
+    image: ghcr.io/ankimcp/headless-anki:x11-vnc-v1.1.0
+    container_name: zeroclaw-anki
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+      - "127.0.0.1:5900:5900"
+    volumes:
+      - ./data:/data
+      - ./startup.sh:/startup.sh:ro
+    environment:
+      - TZ=Europe/Nicosia
