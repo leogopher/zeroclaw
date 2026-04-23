@@ -19,6 +19,34 @@ const TELEGRAM_MAX_MESSAGE_LENGTH: usize = 4096;
 const TELEGRAM_CONTINUATION_OVERHEAD: usize = 30;
 const TELEGRAM_ACK_REACTIONS: &[&str] = &["⚡️", "👌", "👀", "🔥", "👍"];
 
+// Anki pre-LLM dispatcher (see workspace/skills/anki-cards/PLAN_anki_implementation.md).
+// Messages matching these patterns are routed to the Python dispatcher instead of the LLM.
+const ANKI_DISPATCHER_PYTHON: &str =
+    "/home/shaba/.zeroclaw/workspace/skills/anki-cards/.venv/bin/python";
+const ANKI_DISPATCHER_SCRIPT: &str =
+    "/home/shaba/.zeroclaw/workspace/skills/anki-cards/dispatcher.py";
+const ANKI_PENDING_DIR: &str = "/home/shaba/.zeroclaw/anki-pending";
+const ANKI_DISPATCHER_TIMEOUT_SECS: u64 = 30;
+
+static ANKI_PREVIEW_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)^(new anki cards|anki cards|add to anki)\b").unwrap()
+});
+static ANKI_CONFIRM_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)^[a-z][a-z \-]* \d+(,\d+)*(\s*;\s*[a-z][a-z \-]* \d+(,\d+)*)*;?\s*$",
+    )
+    .unwrap()
+});
+static ANKI_CANCEL_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)^cancel\s*$").unwrap());
+
+#[derive(Debug, Clone, Copy)]
+enum AnkiDispatchKind {
+    Preview,
+    Confirm,
+    Cancel,
+}
+
 /// Metadata for an incoming document or photo attachment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct IncomingAttachment {
@@ -332,6 +360,7 @@ pub struct TelegramChannel {
     transcription: Option<crate::config::TranscriptionConfig>,
     voice_transcriptions: Mutex<std::collections::HashMap<String, String>>,
     workspace_dir: Option<std::path::PathBuf>,
+    anki_dispatcher_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -370,7 +399,14 @@ impl TelegramChannel {
             transcription: None,
             voice_transcriptions: Mutex::new(std::collections::HashMap::new()),
             workspace_dir: None,
+            anki_dispatcher_enabled: false,
         }
+    }
+
+    /// Enable pre-LLM routing of Anki-vocabulary messages to the Python dispatcher.
+    pub fn with_anki_dispatcher(mut self, enabled: bool) -> Self {
+        self.anki_dispatcher_enabled = enabled;
+        self
     }
 
     /// Configure workspace directory for saving downloaded attachments.
@@ -2173,6 +2209,164 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         self.send_media_by_url("sendVoice", "voice", chat_id, thread_id, url, caption)
             .await
     }
+
+    /// Split `reply_target` into `(chat_id, thread_id)`.
+    /// `reply_target` is `"<chat_id>"` or `"<chat_id>:<thread_id>"`.
+    fn split_reply_target(reply_target: &str) -> (String, Option<String>) {
+        match reply_target.split_once(':') {
+            Some((chat, thread)) => (chat.to_string(), Some(thread.to_string())),
+            None => (reply_target.to_string(), None),
+        }
+    }
+
+    /// Classify a Telegram message against the Anki dispatcher triggers.
+    ///
+    /// Preview fires unconditionally on a matching prefix. Confirm and cancel
+    /// only fire when a pending preview file exists for this chat; otherwise
+    /// the message falls through to the LLM path so legitimate chat isn't
+    /// hijacked by a bare "cancel" or a stray "foo 1" phrase.
+    fn classify_anki_message(content: &str, chat_id: &str) -> Option<AnkiDispatchKind> {
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if ANKI_PREVIEW_RE.is_match(trimmed) {
+            return Some(AnkiDispatchKind::Preview);
+        }
+        let pending_exists = std::path::Path::new(ANKI_PENDING_DIR)
+            .join(format!("{chat_id}.json"))
+            .exists();
+        if !pending_exists {
+            return None;
+        }
+        if ANKI_CANCEL_RE.is_match(trimmed) {
+            return Some(AnkiDispatchKind::Cancel);
+        }
+        if ANKI_CONFIRM_RE.is_match(trimmed) {
+            return Some(AnkiDispatchKind::Confirm);
+        }
+        None
+    }
+
+    /// Intercept Anki-vocabulary messages BEFORE LLM dispatch.
+    ///
+    /// Returns `true` if the message was handled (caller must skip LLM dispatch);
+    /// `false` if the message should be forwarded to the LLM path unchanged.
+    async fn try_handle_anki_message(&self, msg: &ChannelMessage) -> bool {
+        if !self.anki_dispatcher_enabled {
+            return false;
+        }
+        let (chat_id, thread_id) = Self::split_reply_target(&msg.reply_target);
+        let Some(kind) = Self::classify_anki_message(&msg.content, &chat_id) else {
+            return false;
+        };
+
+        let subcommand = match kind {
+            AnkiDispatchKind::Preview => "preview",
+            AnkiDispatchKind::Confirm => "confirm",
+            AnkiDispatchKind::Cancel => "cancel",
+        };
+
+        tracing::info!(
+            chat_id = %chat_id,
+            kind = ?kind,
+            "Anki dispatcher intercepting Telegram message"
+        );
+
+        let mut cmd = tokio::process::Command::new(ANKI_DISPATCHER_PYTHON);
+        cmd.arg(ANKI_DISPATCHER_SCRIPT)
+            .arg(subcommand)
+            .arg(&chat_id)
+            .arg(&msg.content)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+
+        let spawn_result = cmd.spawn();
+        let child = match spawn_result {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "Failed to spawn Anki dispatcher (check venv path: {ANKI_DISPATCHER_PYTHON})"
+                );
+                let _ = self
+                    .send_text_chunks(
+                        "⚠️ Anki dispatcher error — see logs.",
+                        &chat_id,
+                        thread_id.as_deref(),
+                    )
+                    .await;
+                return true;
+            }
+        };
+
+        let wait_fut = child.wait_with_output();
+        let output = match tokio::time::timeout(
+            Duration::from_secs(ANKI_DISPATCHER_TIMEOUT_SECS),
+            wait_fut,
+        )
+        .await
+        {
+            Ok(Ok(o)) => o,
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, "Anki dispatcher I/O error");
+                let _ = self
+                    .send_text_chunks(
+                        "⚠️ Anki dispatcher error — see logs.",
+                        &chat_id,
+                        thread_id.as_deref(),
+                    )
+                    .await;
+                return true;
+            }
+            Err(_) => {
+                tracing::error!(
+                    "Anki dispatcher timed out after {ANKI_DISPATCHER_TIMEOUT_SECS}s"
+                );
+                let _ = self
+                    .send_text_chunks(
+                        "⚠️ Anki dispatcher error — see logs.",
+                        &chat_id,
+                        thread_id.as_deref(),
+                    )
+                    .await;
+                return true;
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::error!(
+                status = ?output.status,
+                stderr = %stderr,
+                "Anki dispatcher exited non-zero"
+            );
+            let _ = self
+                .send_text_chunks(
+                    "⚠️ Anki dispatcher error — see logs.",
+                    &chat_id,
+                    thread_id.as_deref(),
+                )
+                .await;
+            return true;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if stdout.is_empty() {
+            tracing::warn!("Anki dispatcher produced empty stdout; sending placeholder");
+            let _ = self
+                .send_text_chunks("✅ Done.", &chat_id, thread_id.as_deref())
+                .await;
+        } else if let Err(e) = self
+            .send_text_chunks(&stdout, &chat_id, thread_id.as_deref())
+            .await
+        {
+            tracing::error!(error = %e, "Failed to deliver Anki dispatcher output to Telegram");
+        }
+        true
+    }
 }
 
 #[async_trait]
@@ -2709,6 +2903,13 @@ Ensure only one `zeroclaw` process is using this bot token."
                         .json(&typing_body)
                         .send()
                         .await; // Ignore errors for typing indicator
+
+                    // Anki pre-LLM dispatcher: intercept vocabulary-trigger messages
+                    // before they reach the LLM. See workspace/skills/anki-cards/
+                    // PLAN_anki_implementation.md (Phase 1).
+                    if self.try_handle_anki_message(&msg).await {
+                        continue;
+                    }
 
                     if tx.send(msg).await.is_err() {
                         return Ok(());
