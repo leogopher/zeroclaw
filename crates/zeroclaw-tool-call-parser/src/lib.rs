@@ -1418,6 +1418,13 @@ pub fn strip_tool_result_blocks(text: &str) -> String {
         LazyLock::new(|| Regex::new(r"(?s)<think>.*?</think>").unwrap());
     static TOOL_RESULTS_PREFIX_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?m)^\[Tool results\]\s*\n?").unwrap());
+    // Strip Gemma-style leading reasoning preambles: a bare "thought" /
+    // "thinking" / "reasoning" line (optionally followed by a colon) at the
+    // very start of the response. Some models leak this as plain text
+    // instead of inside <thinking> tags.
+    static LEADING_THOUGHT_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\A\s*(?:thought|thinking|reasoning)\s*:?\s*\r?\n+").unwrap()
+    });
     static EXCESS_BLANK_LINES_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"\n{3,}").unwrap());
 
@@ -1425,6 +1432,7 @@ pub fn strip_tool_result_blocks(text: &str) -> String {
     let result = THINKING_RE.replace_all(&result, "");
     let result = THINK_RE.replace_all(&result, "");
     let result = TOOL_RESULTS_PREFIX_RE.replace_all(&result, "");
+    let result = LEADING_THOUGHT_RE.replace(&result, "");
     let result = EXCESS_BLANK_LINES_RE.replace_all(result.trim(), "\n\n");
 
     result.trim().to_string()
