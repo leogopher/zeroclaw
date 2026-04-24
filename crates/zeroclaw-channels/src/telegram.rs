@@ -44,10 +44,8 @@ static ANKI_PREVIEW_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
     regex::Regex::new(r"(?i)^(new anki cards|anki cards|add to anki)\b").unwrap()
 });
 static ANKI_CONFIRM_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(
-        r"(?i)^[a-z][a-z \-]* \d+(,\d+)*(\s*;\s*[a-z][a-z \-]* \d+(,\d+)*)*;?\s*$",
-    )
-    .unwrap()
+    regex::Regex::new(r"(?i)^[a-z][a-z \-]* \d+(,\d+)*(\s*;\s*[a-z][a-z \-]* \d+(,\d+)*)*;?\s*$")
+        .unwrap()
 });
 static ANKI_CANCEL_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)^cancel\s*$").unwrap());
@@ -2504,38 +2502,36 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         };
 
         let wait_fut = child.wait_with_output();
-        let output = match tokio::time::timeout(
-            Duration::from_secs(ANKI_DISPATCHER_TIMEOUT_SECS),
-            wait_fut,
-        )
-        .await
-        {
-            Ok(Ok(o)) => o,
-            Ok(Err(e)) => {
-                tracing::error!(error = %e, "Anki dispatcher I/O error");
-                let _ = self
-                    .send_text_chunks(
-                        "⚠️ Anki dispatcher error — see logs.",
-                        &chat_id,
-                        thread_id.as_deref(),
-                    )
-                    .await;
-                return true;
-            }
-            Err(_) => {
-                tracing::error!(
-                    "Anki dispatcher timed out after {ANKI_DISPATCHER_TIMEOUT_SECS}s"
-                );
-                let _ = self
-                    .send_text_chunks(
-                        "⚠️ Anki dispatcher error — see logs.",
-                        &chat_id,
-                        thread_id.as_deref(),
-                    )
-                    .await;
-                return true;
-            }
-        };
+        let output =
+            match tokio::time::timeout(Duration::from_secs(ANKI_DISPATCHER_TIMEOUT_SECS), wait_fut)
+                .await
+            {
+                Ok(Ok(o)) => o,
+                Ok(Err(e)) => {
+                    tracing::error!(error = %e, "Anki dispatcher I/O error");
+                    let _ = self
+                        .send_text_chunks(
+                            "⚠️ Anki dispatcher error — see logs.",
+                            &chat_id,
+                            thread_id.as_deref(),
+                        )
+                        .await;
+                    return true;
+                }
+                Err(_) => {
+                    tracing::error!(
+                        "Anki dispatcher timed out after {ANKI_DISPATCHER_TIMEOUT_SECS}s"
+                    );
+                    let _ = self
+                        .send_text_chunks(
+                            "⚠️ Anki dispatcher error — see logs.",
+                            &chat_id,
+                            thread_id.as_deref(),
+                        )
+                        .await;
+                    return true;
+                }
+            };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
