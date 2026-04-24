@@ -3507,6 +3507,7 @@ mod tests {
             ack_reactions: None,
             proxy_url: None,
             approval_timeout_secs: 120,
+            anki_dispatcher_enabled: false,
         });
         apply_tui_selections_to_config(&app, &mut config);
         let tg = config.channels.telegram.as_ref().unwrap();
