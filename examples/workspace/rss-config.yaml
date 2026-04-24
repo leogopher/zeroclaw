@@ -1,0 +1,3 @@
+# RSS MCP Configuration
+timezone: "Europe/Nicosia"
+max_entries_per_feed: 15

@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Fetch events across all Google calendars via `gog`, normalize to Europe/Nicosia,
+and print a compact markdown list. Designed to be called by ZeroClaw's agent.
+
+Usage:
+    agenda today
+    agenda tomorrow
+    agenda week
+    agenda days 7
+    agenda from 2026-04-23 to 2026-04-30
+"""
+import json
+import subprocess
+import sys
+from datetime import datetime, date
+from zoneinfo import ZoneInfo
+
+TZ = ZoneInfo("Europe/Nicosia")
+DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def run_gog(extra_args):
+    cmd = ["gog", "calendar", "events", "--all", "--json", "--results-only",
+           "--all-pages", "--max", "200"] + extra_args
+    try:
+        out = subprocess.check_output(cmd, text=True, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        sys.stderr.write(f"gog failed: {e.stderr}\n")
+        sys.exit(e.returncode)
+    data = json.loads(out)
+    if isinstance(data, dict):
+        return data.get("items", data.get("events", []))
+    return data or []
+
+
+def parse_event(raw):
+    start = raw.get("start", {})
+    end = raw.get("end", {})
+    summary = raw.get("summary", "(no title)").strip()
+    cal_summary = (raw.get("calendarSummary")
+                   or raw.get("organizer", {}).get("displayName")
+                   or raw.get("calendarId", ""))
+
+    if "date" in start:  # all-day
+        d = date.fromisoformat(start["date"])
+        return {
+            "all_day": True,
+            "day": d,
+            "sort_key": datetime(d.year, d.month, d.day, tzinfo=TZ),
+            "summary": summary,
+            "calendar": cal_summary,
+        }
+
+    st = datetime.fromisoformat(start["dateTime"]).astimezone(TZ)
+    et = datetime.fromisoformat(end["dateTime"]).astimezone(TZ)
+    return {
+        "all_day": False,
+        "day": st.date(),
+        "sort_key": st,
+        "start_hm": st.strftime("%H:%M"),
+        "end_hm": et.strftime("%H:%M"),
+        "summary": summary,
+        "calendar": cal_summary,
+    }
+
+
+def fmt_day(d: date) -> str:
+    return f"{DAY_LABELS[d.weekday()]} {d.day} {MONTH_LABELS[d.month-1]}"
+
+
+def fmt_event(ev) -> str:
+    if ev["all_day"]:
+        return f"• All day — {ev['summary']}"
+    return f"• {ev['start_hm']}–{ev['end_hm']} — {ev['summary']}"
+
+
+def render(events, header, single_day=False):
+    if not events:
+        return f"{header}\n\n_No events._"
+    events = sorted(events, key=lambda e: e["sort_key"])
+    lines = [header, ""]
+    if single_day:
+        for ev in events:
+            lines.append(fmt_event(ev))
+        return "\n".join(lines)
+
+    # Multi-day: group by date
+    current = None
+    for ev in events:
+        if ev["day"] != current:
+            if current is not None:
+                lines.append("")
+            current = ev["day"]
+            lines.append(f"**{fmt_day(current)}**")
+        lines.append(fmt_event(ev))
+    return "\n".join(lines)
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("usage: agenda (today|tomorrow|week|days N|from DATE to DATE)",
+              file=sys.stderr)
+        sys.exit(2)
+
+    mode = sys.argv[1]
+    today = datetime.now(TZ).date()
+
+    if mode == "today":
+        events = [parse_event(e) for e in run_gog(["--today"])]
+        header = f"📅 **Today — {fmt_day(today)}**"
+        print(render(events, header, single_day=True))
+    elif mode == "tomorrow":
+        events = [parse_event(e) for e in run_gog(["--tomorrow"])]
+        from datetime import timedelta
+        tomorrow = today + timedelta(days=1)
+        header = f"📅 **Tomorrow — {fmt_day(tomorrow)}**"
+        print(render(events, header, single_day=True))
+    elif mode == "week":
+        events = [parse_event(e) for e in run_gog(["--week", "--weekday"])]
+        header = "📅 **This week**"
+        print(render(events, header))
+    elif mode == "days" and len(sys.argv) >= 3:
+        n = sys.argv[2]
+        events = [parse_event(e) for e in run_gog(["--days", n])]
+        header = f"📅 **Next {n} days**"
+        print(render(events, header))
+    elif mode == "from" and len(sys.argv) >= 5 and sys.argv[3] == "to":
+        fr, to = sys.argv[2], sys.argv[4]
+        events = [parse_event(e) for e in run_gog(["--from", fr, "--to", to])]
+        header = f"📅 **{fr} → {to}**"
+        print(render(events, header))
+    else:
+        print("usage: agenda (today|tomorrow|week|days N|from DATE to DATE)",
+              file=sys.stderr)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

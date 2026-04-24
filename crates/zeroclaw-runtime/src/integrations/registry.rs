@@ -880,6 +880,7 @@ mod tests {
             ack_reactions: None,
             proxy_url: None,
             approval_timeout_secs: 120,
+            anki_dispatcher_enabled: false,
         });
         let entries = all_integrations();
         let tg = entries.iter().find(|e| e.name == "Telegram").unwrap();

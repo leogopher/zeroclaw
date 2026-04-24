@@ -1052,6 +1052,7 @@ mod tests {
             ack_reactions: None,
             proxy_url: None,
             approval_timeout_secs: 120,
+            anki_dispatcher_enabled: false,
         });
         assert!(has_supervised_channels(&config));
     }
@@ -1198,6 +1199,7 @@ mod tests {
             ack_reactions: None,
             proxy_url: None,
             approval_timeout_secs: 120,
+            anki_dispatcher_enabled: false,
         });
 
         let target = resolve_heartbeat_delivery(&config).unwrap();
@@ -1218,6 +1220,7 @@ mod tests {
             ack_reactions: None,
             proxy_url: None,
             approval_timeout_secs: 120,
+            anki_dispatcher_enabled: false,
         });
 
         let target = resolve_heartbeat_delivery(&config).unwrap();

@@ -4000,6 +4000,9 @@ fn setup_channels(
                     approval_timeout_secs: existing_tg
                         .map(|t| t.approval_timeout_secs)
                         .unwrap_or(120),
+                    anki_dispatcher_enabled: existing_tg
+                        .map(|t| t.anki_dispatcher_enabled)
+                        .unwrap_or(false),
                 });
             }
             ChannelMenuChoice::Discord => {

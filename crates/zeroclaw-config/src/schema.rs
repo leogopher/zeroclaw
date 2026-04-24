@@ -6871,6 +6871,12 @@ pub struct TelegramConfig {
     /// button on a tool approval prompt before auto-denying. Default: 120.
     #[serde(default = "default_telegram_approval_timeout_secs")]
     pub approval_timeout_secs: u64,
+    /// When true, intercept Anki-vocabulary messages (preview / confirm / cancel)
+    /// BEFORE LLM dispatch and route them to the deterministic Python dispatcher
+    /// at `~/.zeroclaw/workspace/skills/anki-cards/dispatcher.py`. Non-matching
+    /// messages pass through unchanged.
+    #[serde(default)]
+    pub anki_dispatcher_enabled: bool,
 }
 
 impl ChannelConfig for TelegramConfig {
@@ -11712,6 +11718,7 @@ auto_save = true
                     ack_reactions: None,
                     proxy_url: None,
                     approval_timeout_secs: default_telegram_approval_timeout_secs(),
+                    anki_dispatcher_enabled: false,
                 }),
                 discord: None,
                 discord_history: None,
@@ -12603,6 +12610,7 @@ default_temperature = 0.7
             ack_reactions: None,
             proxy_url: None,
             approval_timeout_secs: 120,
+            anki_dispatcher_enabled: false,
         };
         let json = serde_json::to_string(&tc).unwrap();
         let parsed: TelegramConfig = serde_json::from_str(&json).unwrap();
@@ -15798,6 +15806,7 @@ require_otp_to_resume = true
             ack_reactions: None,
             proxy_url: None,
             approval_timeout_secs: default_telegram_approval_timeout_secs(),
+            anki_dispatcher_enabled: false,
         });
 
         // Save (triggers encryption)

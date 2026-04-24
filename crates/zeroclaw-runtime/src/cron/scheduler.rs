@@ -468,6 +468,72 @@ fn warn_if_high_frequency_agent_job(job: &CronJob) {
     }
 }
 
+/// Strip Obsidian `[[wikilinks]]` from text, keeping inner content.
+fn strip_wikilinks(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.char_indices().peekable();
+    while let Some((_i, c)) = chars.next() {
+        if c == '[' {
+            if let Some(&(_, '[')) = chars.peek() {
+                chars.next();
+                let start = if let Some(&(pos, _)) = chars.peek() {
+                    pos
+                } else {
+                    result.push_str("[[");
+                    break;
+                };
+                let mut end = start;
+                let mut found = false;
+                while let Some(&(j, ch)) = chars.peek() {
+                    if ch == ']' {
+                        chars.next();
+                        if let Some(&(_, ']')) = chars.peek() {
+                            chars.next();
+                            end = j;
+                            found = true;
+                            break;
+                        } else {
+                            end = j + 1;
+                        }
+                    } else {
+                        end = j + ch.len_utf8();
+                        chars.next();
+                    }
+                }
+                if found {
+                    result.push_str(&text[start..end]);
+                } else {
+                    result.push_str("[[");
+                    result.push_str(&text[start..end]);
+                }
+            } else {
+                result.push(c);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Clean output for delivery: strip preamble before first emoji header,
+/// remove Obsidian `[[wikilinks]]`, and unescape backslash-escaped punctuation.
+fn clean_delivery_output(output: &str) -> String {
+    let cleaned = strip_wikilinks(output)
+        .replace("\\!", "!")
+        .replace("\\?", "?");
+    if let Some(pos) = cleaned.find(|c: char| {
+        let cp = c as u32;
+        (0x1F300..=0x1F9FF).contains(&cp)
+            || (0x2600..=0x27BF).contains(&cp)
+            || (0x1FA00..=0x1FAFF).contains(&cp)
+    }) {
+        cleaned[pos..].to_string()
+    } else {
+        cleaned
+    }
+}
+
 async fn deliver_if_configured(config: &Config, job: &CronJob, output: &str) -> Result<()> {
     let delivery: &DeliveryConfig = &job.delivery;
     if !delivery.mode.eq_ignore_ascii_case("announce") {
@@ -483,7 +549,8 @@ async fn deliver_if_configured(config: &Config, job: &CronJob, output: &str) -> 
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("delivery.to is required for announce mode"))?;
 
-    deliver_announcement(config, channel, target, output).await
+    let cleaned = clean_delivery_output(output);
+    deliver_announcement(config, channel, target, &cleaned).await
 }
 
 /// Delivery function type — takes owned values so the returned future is 'static.
@@ -611,13 +678,20 @@ async fn run_job_command_with_timeout(
         Ok(Ok(output)) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let combined = format!(
-                "status={}\nstdout:\n{}\nstderr:\n{}",
-                output.status,
-                stdout.trim(),
-                stderr.trim()
-            );
-            (output.status.success(), combined)
+            let success = output.status.success();
+            // When delivery is configured and the command succeeded, send only
+            // stdout so the user sees clean text (no status/stderr wrapper).
+            let combined = if success && job.delivery.mode.eq_ignore_ascii_case("announce") {
+                stdout.trim().to_string()
+            } else {
+                format!(
+                    "status={}\nstdout:\n{}\nstderr:\n{}",
+                    output.status,
+                    stdout.trim(),
+                    stderr.trim()
+                )
+            };
+            (success, combined)
         }
         Ok(Err(e)) => (false, format!("spawn error: {e}")),
         Err(_) => (
