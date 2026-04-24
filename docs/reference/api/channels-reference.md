@@ -11,6 +11,7 @@ For encrypted Matrix rooms, also read the dedicated runbook:
 - Need a no-response diagnosis flow: jump to [Troubleshooting Checklist](#6-troubleshooting-checklist).
 - Need Matrix encrypted-room help: use [Matrix E2EE Guide](../../security/matrix-e2ee-guide.md).
 - Need Nextcloud Talk bot setup: use [Nextcloud Talk Setup](../../setup-guides/nextcloud-talk-setup.md).
+- Need LINE Messaging API setup: use [LINE Setup](../../setup-guides/line-setup.md).
 - Need deployment/network assumptions (polling vs webhook): use [Network Deployment](../../ops/network-deployment.md).
 
 ## FAQ: Matrix setup passes but no reply
@@ -117,6 +118,7 @@ If `[channels_config.matrix]`, `[channels_config.lark]`, or `[channels_config.fe
 | IRC | IRC socket | No |
 | Lark | websocket (default) or webhook | Webhook mode only |
 | Feishu | websocket (default) or webhook | Webhook mode only |
+| LINE | webhook (`/webhook`) | Yes (public HTTPS callback) |
 | DingTalk | stream mode | No |
 | QQ | bot gateway | No |
 | Linq | webhook (`/linq`) | Yes (public HTTPS callback) |
@@ -135,7 +137,7 @@ For channels with inbound sender allowlists:
 
 Field names differ by channel:
 
-- `allowed_users` (Telegram/Discord/Slack/Mattermost/Matrix/IRC/Lark/Feishu/DingTalk/QQ/Nextcloud Talk)
+- `allowed_users` (Telegram/Discord/Slack/Mattermost/Matrix/IRC/Lark/Feishu/DingTalk/QQ/Nextcloud Talk/LINE)
 - `allowed_from` (Signal)
 - `allowed_numbers` (WhatsApp)
 - `allowed_senders` (Email/Linq)
@@ -172,7 +174,18 @@ guild_id = "123456789012345678"   # optional
 allowed_users = ["*"]
 listen_to_bots = false
 mention_only = false
+stream_mode = "multi_message"     # optional: off | partial | multi_message (default: multi_message via wizard)
+draft_update_interval_ms = 1000   # optional: edit throttle for partial streaming
+multi_message_delay_ms = 800      # optional: delay between paragraph sends in multi_message mode
 ```
+
+Discord notes:
+
+- `stream_mode = "partial"` sends an editable draft message that updates token-by-token as the LLM streams its response, then finalizes with the complete text.
+- `stream_mode = "multi_message"` delivers the response incrementally as separate messages, splitting at paragraph boundaries (`\n\n`) as tokens arrive from the provider. Each paragraph appears in Discord as soon as it completes.
+- `draft_update_interval_ms` controls edit throttling in partial mode (default: 1000ms).
+- `multi_message_delay_ms` controls minimum delay between paragraph sends in multi_message mode to avoid Discord rate limits (default: 800ms).
+- Code fences are never split across messages in multi_message mode.
 
 ### 4.3 Slack
 
@@ -181,11 +194,13 @@ mention_only = false
 bot_token = "xoxb-..."
 app_token = "xapp-..."             # optional
 channel_id = "C1234567890"         # optional: single channel; omit or "*" for all accessible channels
+channel_ids = ["C1234567890"]      # optional: explicit channel list; takes precedence over channel_id
 allowed_users = ["*"]
 ```
 
 Slack listen behavior:
 
+- `channel_ids = ["C123...", "D456..."]`: listen only on the listed channels/DMs.
 - `channel_id = "C123..."`: listen only on that channel.
 - `channel_id = "*"` or omitted: auto-discover and listen across all accessible channels.
 
@@ -209,7 +224,19 @@ user_id = "@zeroclaw:matrix.example.com"   # optional, recommended for E2EE
 device_id = "DEVICEID123"                  # optional, recommended for E2EE
 room_id = "!room:matrix.example.com"       # or room alias (#ops:matrix.example.com)
 allowed_users = ["*"]
+stream_mode = "partial"                    # optional: off | partial | multi_message (default: partial via wizard)
+draft_update_interval_ms = 1500            # optional: edit throttle for partial streaming
+multi_message_delay_ms = 800               # optional: delay between paragraph sends in multi_message mode
 ```
+
+Matrix streaming notes:
+
+- `stream_mode = "partial"` sends an editable draft message that updates token-by-token via Matrix `m.replace` edits as the LLM streams its response.
+- `stream_mode = "multi_message"` delivers the response incrementally as separate messages, splitting at paragraph boundaries (`\n\n`) as tokens arrive. Code fences are never split across messages.
+- `draft_update_interval_ms` controls edit throttling in partial mode (default: 1500ms, higher than Telegram to account for E2EE re-encryption overhead and federation latency).
+- `multi_message_delay_ms` controls minimum delay between paragraph sends in multi_message mode (default: 800ms).
+- Both modes work in encrypted and unencrypted rooms — the matrix-sdk handles E2EE transparently.
+- Existing configs without `stream_mode` default to `off` (no behavior change).
 
 See [Matrix E2EE Guide](../../security/matrix-e2ee-guide.md) for encrypted-room troubleshooting.
 
@@ -241,6 +268,8 @@ phone_number_id = "123456789012345"
 verify_token = "your-verify-token"
 app_secret = "your-app-secret"     # optional but recommended
 allowed_numbers = ["*"]
+dm_mention_patterns = []           # optional: regex patterns for DM mention gating
+group_mention_patterns = []        # optional: regex patterns for group-chat mention gating
 ```
 
 WhatsApp Web mode:
@@ -251,6 +280,10 @@ session_path = "~/.zeroclaw/state/whatsapp-web/session.db"
 pair_phone = "15551234567"         # optional; omit to use QR flow
 pair_code = ""                     # optional custom pair code
 allowed_numbers = ["*"]
+mention_only = false               # optional: require @mention in groups (DMs always processed)
+dm_mention_patterns = []           # optional: regex patterns for DM mention gating
+group_mention_patterns = []        # optional: regex patterns for group-chat mention gating
+interrupt_on_new_message = false   # optional: cancel in-flight same-sender same-chat request
 ```
 
 Notes:
@@ -258,6 +291,9 @@ Notes:
 - Build with `cargo build --features whatsapp-web` (or equivalent run command).
 - Keep `session_path` on persistent storage to avoid relinking after restart.
 - Reply routing uses the originating chat JID, so direct and group replies work correctly.
+- `mention_only = true` makes the bot ignore group messages unless the bot is @-mentioned. Direct messages are always processed. Bot identity is seeded from `pair_phone` and updated from the device store on connect.
+- `dm_mention_patterns` and `group_mention_patterns` (both modes) provide regex-based mention gating for DMs and group chats respectively. When non-empty, only messages matching at least one pattern are processed; matched fragments are stripped from the forwarded content. Patterns are case-insensitive. Example: `["@?ZeroClaw", "\\+?15555550123"]`. Invalid or oversized patterns are logged and skipped.
+- `interrupt_on_new_message = true` preserves interrupted user turns in conversation history, then restarts generation on the newest message.
 
 ### 4.8 Webhook Channel Config (Gateway)
 
@@ -387,7 +423,32 @@ app_secret = "qq-app-secret"
 allowed_users = ["*"]
 ```
 
-### 4.16 Nextcloud Talk
+### 4.16 LINE
+
+```toml
+[channels_config.line]
+enabled = true
+channel_access_token = "your-channel-access-token"  # or LINE_CHANNEL_ACCESS_TOKEN env var
+channel_secret = "your-channel-secret"               # or LINE_CHANNEL_SECRET env var
+dm_policy = "pairing"    # open | pairing (default) | allowlist
+group_policy = "mention" # open | mention (default) | disabled
+webhook_port = 8443
+# allowed_users = ["Uabc123"]  # used when dm_policy = allowlist
+# proxy_url = "socks5://127.0.0.1:1080"
+```
+
+Notes:
+
+- Inbound webhook endpoint: `POST /webhook`.
+- Signature verification uses `X-Line-Signature` (HMAC-SHA256 of the raw request body). Invalid signatures are rejected before any payload parsing.
+- `dm_policy = pairing` requires the user to send `/bind <code>` before the bot responds. The pairing code is printed in the log at startup.
+- `dm_policy = allowlist` restricts DMs to LINE user IDs in `allowed_users`. Use `["*"]` to allow everyone.
+- `group_policy = mention` responds only when the bot is @mentioned in a group. The @mention token is stripped before the message is sent to the model.
+- Reply tokens (~30 s window) are consumed once. If expired, the bot falls back to the Push API automatically.
+- Audio messages require `[transcription]` to be configured; without it they are silently skipped.
+- See [LINE Setup Guide](../../setup-guides/line-setup.md) for a full runbook.
+
+### 4.17 Nextcloud Talk
 
 ```toml
 [channels_config.nextcloud_talk]
@@ -395,6 +456,7 @@ base_url = "https://cloud.example.com"
 app_token = "nextcloud-talk-app-token"
 webhook_secret = "optional-webhook-secret"  # optional but recommended
 allowed_users = ["*"]
+# bot_name = "zeroclaw"  # display name of the bot; filters own messages to prevent feedback loops
 ```
 
 Notes:
@@ -405,7 +467,7 @@ Notes:
 - `ZEROCLAW_NEXTCLOUD_TALK_WEBHOOK_SECRET` overrides config secret.
 - See [nextcloud-talk-setup.md](../../setup-guides/nextcloud-talk-setup.md) for a full runbook.
 
-### 4.16 Linq
+### 4.18 Linq
 
 ```toml
 [channels_config.linq]
@@ -424,7 +486,7 @@ Notes:
 - `ZEROCLAW_LINQ_SIGNING_SECRET` overrides config secret.
 - `allowed_senders` uses E.164 phone number format (e.g. `+1234567890`).
 
-### 4.17 iMessage
+### 4.19 iMessage
 
 ```toml
 [channels_config.imessage]
@@ -501,6 +563,7 @@ rg -n "Matrix|Telegram|Discord|Slack|Mattermost|Signal|WhatsApp|Email|IRC|Lark|D
 | QQ | `QQ: connected and identified` | `QQ: ignoring C2C message from unauthorized user:` / `QQ: ignoring group message from unauthorized user:` | `QQ: received Reconnect (op 7)` / `QQ: received Invalid Session (op 9)` / `QQ: message channel closed` |
 | Nextcloud Talk (gateway) | `POST /nextcloud-talk — Nextcloud Talk bot webhook` | `Nextcloud Talk webhook signature verification failed` / `Nextcloud Talk: ignoring message from unauthorized actor:` | `Nextcloud Talk send failed:` / `LLM error for Nextcloud Talk message:` |
 | iMessage | `iMessage channel listening (AppleScript bridge)...` | (contact allowlist enforced by `allowed_contacts`) | `iMessage poll error:` |
+| LINE | `LINE webhook server listening on 0.0.0.0:<port>` | `LINE: DM from <userId> rejected by policy` / `LINE: unpaired user <userId>; ignoring until /bind` | `LINE: invalid X-Line-Signature` / `LINE: audio download failed for <messageId>:` |
 | Nostr | `Nostr channel listening as npub1...` | `Nostr: ignoring NIP-04 message from unauthorized pubkey:` / `Nostr: ignoring NIP-17 message from unauthorized pubkey:` | `Failed to decrypt NIP-04 message:` / `Failed to unwrap NIP-17 gift wrap:` / `Nostr relay pool shut down` |
 
 ### 7.3 Runtime supervisor keywords

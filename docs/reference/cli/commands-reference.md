@@ -2,7 +2,7 @@
 
 This reference is derived from the current CLI surface (`zeroclaw --help`).
 
-Last verified: **February 21, 2026**.
+Last verified: **March 26, 2026**.
 
 ## Top-Level Commands
 
@@ -11,6 +11,7 @@ Last verified: **February 21, 2026**.
 | `onboard` | Initialize workspace/config quickly or interactively |
 | `agent` | Run interactive chat or single-message mode |
 | `gateway` | Start webhook and WhatsApp HTTP gateway |
+| `acp` | Start ACP (Agent Control Protocol) server over stdio |
 | `daemon` | Start supervised runtime (gateway + channels + optional heartbeat/scheduler) |
 | `service` | Manage user-level OS service lifecycle |
 | `doctor` | Run diagnostics and freshness checks |
@@ -23,7 +24,7 @@ Last verified: **February 21, 2026**.
 | `integrations` | Inspect integration details |
 | `skills` | List/install/remove skills |
 | `migrate` | Import from external runtimes (currently OpenClaw) |
-| `config` | Export machine-readable config schema |
+| `config` | Manage configuration (view/set properties, export schema) |
 | `completions` | Generate shell completion scripts to stdout |
 | `hardware` | Discover and introspect USB hardware |
 | `peripheral` | Configure and flash peripherals |
@@ -59,6 +60,20 @@ Last verified: **February 21, 2026**.
 Tip:
 
 - In interactive chat, you can ask for route changes in natural language (for example “conversation uses kimi, coding uses gpt-5.3-codex”); the assistant can persist this via tool `model_routing_config`.
+
+### `acp`
+
+- `zeroclaw acp`
+- `zeroclaw acp --max-sessions <N>`
+- `zeroclaw acp --session-timeout <SECONDS>`
+
+Start the ACP (Agent Control Protocol) server for IDE and tool integration.
+
+- Uses JSON-RPC 2.0 over stdin/stdout
+- Supports methods: `initialize`, `session/new`, `session/prompt`, `session/stop`
+- Streams agent reasoning, tool calls, and content in real-time as notifications
+- Default max sessions: 10
+- Default session timeout: 3600 seconds (1 hour)
 
 ### `gateway` / `daemon`
 
@@ -181,9 +196,25 @@ Skill manifests (`SKILL.toml`) support `prompts` and `[[tools]]`; both are injec
 
 ### `config`
 
-- `zeroclaw config schema`
+- `zeroclaw config list` — list all properties with current values
+- `zeroclaw config list --secrets` — list only secret (encrypted) fields
+- `zeroclaw config list --filter channels.matrix` — filter by path prefix
+- `zeroclaw config get <path>` — get a single property value (secrets show set/unset status)
+- `zeroclaw config set <path> <value>` — set a property value
+- `zeroclaw config set <path>` — secret fields prompt for masked input; enum fields offer interactive selection
+- `zeroclaw config set --no-interactive <path> <value>` — scripted mode, no prompts
+- `zeroclaw config init <section>` — create an unconfigured section with defaults (`enabled=false`)
+- `zeroclaw config init` — initialize all unconfigured sections
+- `zeroclaw config schema` — print JSON Schema (draft 2020-12) to stdout
 
-`config schema` prints a JSON Schema (draft 2020-12) for the full `config.toml` contract to stdout.
+Secret fields (API keys, tokens, passwords) are automatically detected via `#[secret]`
+annotations. When setting a secret, input is masked regardless of whether a value is
+provided on the command line.
+
+Enum fields (e.g. `stream-mode`, `search-mode`) offer interactive selection via arrow
+keys when the value is omitted. Provide the value directly to skip the prompt.
+
+Shell tab-completion for property paths is included in `zeroclaw completions <shell>`.
 
 ### `completions`
 
@@ -208,6 +239,16 @@ Skill manifests (`SKILL.toml`) support `prompts` and `[[tools]]`; both are injec
 - `zeroclaw peripheral flash [--port <serial_port>]`
 - `zeroclaw peripheral setup-uno-q [--host <ip_or_host>]`
 - `zeroclaw peripheral flash-nucleo`
+
+### `props` (deprecated)
+
+`zeroclaw props` has been renamed to `zeroclaw config`. Replace `props` with `config` in your commands.
+
+#### Adding new config fields
+
+Config structs derive `Configurable` with `#[prefix]` and `#[nested]` attributes.
+Adding a new field to an existing struct makes it immediately available via `config`.
+New enum types require a one-line `HasPropKind` impl. See `CONTRIBUTING.md` for details.
 
 ## Validation Tip
 

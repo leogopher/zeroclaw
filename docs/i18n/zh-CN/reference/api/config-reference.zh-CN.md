@@ -33,6 +33,7 @@ ZeroClaw 在启动时以 `INFO` 级别记录解析后的配置：
 | `backend` | `none` | 可观测性后端：`none`、`noop`、`log`、`prometheus`、`otel`、`opentelemetry` 或 `otlp` |
 | `otel_endpoint` | `http://localhost:4318` | 当后端为 `otel` 时使用的 OTLP HTTP 端点 |
 | `otel_service_name` | `zeroclaw` | 发送到 OTLP 收集器的服务名称 |
+| `otel_headers` | _(无)_ | OTLP 导出的可选 HTTP 头（例如授权）。以 TOML 表 `[observability.otel_headers]` 指定。直接编辑 `config.toml` — 无法通过 `zeroclaw config set` 设置。值以明文存储；请用 `chmod 600` 保护 `config.toml`。 |
 | `runtime_trace_mode` | `none` | 运行时跟踪存储模式：`none`、`rolling` 或 `full` |
 | `runtime_trace_path` | `state/runtime-trace.jsonl` | 运行时跟踪 JSONL 路径（除非绝对路径，否则相对于工作区） |
 | `runtime_trace_max_entries` | `200` | 当 `runtime_trace_mode = \"rolling\"` 时保留的最大事件数 |
@@ -57,6 +58,9 @@ otel_service_name = \"zeroclaw\"
 runtime_trace_mode = \"rolling\"
 runtime_trace_path = \"state/runtime-trace.jsonl\"
 runtime_trace_max_entries = 200
+
+[observability.otel_headers]
+Authorization = \"Bearer <your-token>\"
 ```
 
 ## 环境提供商覆盖
@@ -76,7 +80,7 @@ runtime_trace_max_entries = 200
 
 | 键 | 默认值 | 用途 |
 |---|---|---|
-| `compact_context` | `false` | 为 true 时：bootstrap_max_chars=6000，rag_chunk_limit=2。适用于 13B 或更小的模型 |
+| `compact_context` | `true` | 为 true 时：bootstrap_max_chars=6000，rag_chunk_limit=2。适用于 13B 或更小的模型 |
 | `max_tool_iterations` | `10` | 跨 CLI、网关和渠道的每条用户消息的最大工具调用循环轮次 |
 | `max_history_messages` | `50` | 每个会话保留的最大对话历史消息数 |
 | `parallel_tools` | `false` | 在单次迭代中启用并行工具执行 |
@@ -314,6 +318,46 @@ temperature = 0.2
 - 使用精确域或子域匹配（例如 `"api.example.com"`、`"example.com"`），或 `"*"` 允许任何公共域。
 - 即使配置了 `"*"`，本地/私有目标仍然被阻止。
 
+## `[google_workspace]`
+
+| 键 | 默认值 | 用途 |
+|---|---|---|
+| `enabled` | `false` | 启用 `google_workspace` 工具 |
+| `credentials_path` | 未设置 | Google 服务账号或 OAuth 凭据 JSON 的路径 |
+| `default_account` | 未设置 | 传递给 `gws` 的 `--account` 默认 Google 账号 |
+| `allowed_services` | （内置列表） | 代理可访问的服务：`drive`、`gmail`、`calendar`、`sheets`、`docs`、`slides`、`tasks`、`people`、`chat`、`classroom`、`forms`、`keep`、`meet`、`events` |
+| `rate_limit_per_minute` | `60` | 每分钟最大 `gws` 调用次数 |
+| `timeout_secs` | `30` | 每次调用超时时间（秒） |
+| `audit_log` | `false` | 为每次 `gws` 调用记录 `INFO` 日志 |
+
+### `[[google_workspace.allowed_operations]]`
+
+非空时，仅精确匹配的调用通过。当 `service`、`resource`、`sub_resource` 和 `method` 全部一致时，条目匹配。
+为空时（默认），`allowed_services` 内的所有组合均可用。
+
+| 键 | 是否必填 | 用途 |
+|---|---|---|
+| `service` | 是 | 服务标识符（须匹配 `allowed_services` 中的条目） |
+| `resource` | 是 | 顶层资源名称（Gmail 为 `users`，Drive 为 `files`，Calendar 为 `events`） |
+| `sub_resource` | 否 | 4 段 gws 命令的子资源。Gmail 操作使用 `gws gmail users <sub_resource> <method>`，因此 Gmail 条目需填写 `sub_resource` 才能在运行时匹配。Drive、Calendar 等使用 3 段命令，省略此字段。 |
+| `methods` | 是 | 该资源/子资源上允许的一个或多个方法名称 |
+
+Gmail 所有操作使用 `gws gmail users <sub_resource> <method>` 格式。未填写 `sub_resource` 的 Gmail 条目在运行时将永远无法匹配。Drive 和 Calendar 使用 3 段命令，省略 `sub_resource`。
+
+```toml
+[google_workspace]
+enabled = true
+default_account = "owner@company.com"
+allowed_services = ["gmail"]
+audit_log = true
+
+[[google_workspace.allowed_operations]]
+service = "gmail"
+resource = "users"
+sub_resource = "drafts"
+methods = ["list", "get", "create", "update"]
+```
+
 ## `[gateway]`
 
 | 键 | 默认值 | 用途 |
@@ -522,6 +566,8 @@ WhatsApp 在一个配置表下支持两个后端。
 | `verify_token` | 是 | Webhook 验证令牌 |
 | `app_secret` | 可选 | 启用 webhook 签名验证（`X-Hub-Signature-256`） |
 | `allowed_numbers` | 推荐 | 允许的入站号码（`[]` = 拒绝所有，`"*"` = 允许所有） |
+| `dm_mention_patterns` | 可选 | 私聊提及门控的正则表达式（不区分大小写）。当非空时，只有匹配至少一个模式的私聊消息才会被处理；匹配片段将被去除。示例：`["@?ZeroClaw"]` |
+| `group_mention_patterns` | 可选 | 群聊提及门控的正则表达式（不区分大小写）。当非空时，只有匹配至少一个模式的群聊消息才会被处理；匹配片段将被去除。示例：`["@?ZeroClaw"]` |
 
 WhatsApp Web 模式（原生客户端）：
 
@@ -531,6 +577,8 @@ WhatsApp Web 模式（原生客户端）：
 | `pair_phone` | 可选 | 配对码流程电话号码（仅数字） |
 | `pair_code` | 可选 | 自定义配对码（否则自动生成） |
 | `allowed_numbers` | 推荐 | 允许的入站号码（`[]` = 拒绝所有，`"*"` = 允许所有） |
+| `dm_mention_patterns` | 可选 | 私聊提及门控的正则表达式（不区分大小写）。当非空时，只有匹配至少一个模式的私聊消息才会被处理；匹配片段将被去除。示例：`["@?ZeroClaw"]` |
+| `group_mention_patterns` | 可选 | 群聊提及门控的正则表达式（不区分大小写）。当非空时，只有匹配至少一个模式的群聊消息才会被处理；匹配片段将被去除。示例：`["@?ZeroClaw"]` |
 
 注意事项：
 
