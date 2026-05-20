@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import tomllib
 from pathlib import Path
 
@@ -23,6 +24,11 @@ CONFIG_PATH = Path.home() / ".zeroclaw" / "config.toml"
 ZAI_ENDPOINT = "https://api.z.ai/api/paas/v4/chat/completions"
 ZAI_MODEL = os.environ.get("ZEROCLAW_ZAI_MODEL", "glm-5")
 TIMEOUT_SEC = 30
+
+# Z.ai's free tier 429s under concurrent load. Cap simultaneous chat() calls
+# so a 16-phrase batch doesn't fan out into 16 parallel rejected requests.
+_CHAT_CONCURRENCY = int(os.environ.get("ZEROCLAW_ZAI_CONCURRENCY", "2"))
+_chat_semaphore = threading.Semaphore(_CHAT_CONCURRENCY)
 
 _cached_key: str | None = None
 
@@ -63,23 +69,27 @@ def chat(system: str, user: str, temperature: float = 0.2) -> str:
         "Content-Type": "application/json",
     }
     # Retry 429 / 5xx with exponential backoff. Anything else is fatal.
+    # Hold the semaphore for the duration of the (possibly retrying) call so
+    # backoff actually staggers — releasing between retries would let the
+    # next waiter pile straight back in.
     last_err: Exception | None = None
-    for attempt in range(4):
-        try:
-            r = requests.post(ZAI_ENDPOINT, json=payload, headers=headers, timeout=TIMEOUT_SEC)
-        except requests.RequestException as e:
-            last_err = e
-            time.sleep(1.5 * (2 ** attempt))
-            continue
-        if r.status_code == 429 or 500 <= r.status_code < 600:
-            last_err = RuntimeError(f"Z.ai HTTP {r.status_code}: {r.text[:200]}")
-            # Honor Retry-After if present, else exponential backoff.
-            wait = float(r.headers.get("Retry-After") or 0) or 1.5 * (2 ** attempt)
-            time.sleep(min(wait, 15))
-            continue
-        r.raise_for_status()
-        data = r.json()
-        return data["choices"][0]["message"]["content"]
+    with _chat_semaphore:
+        for attempt in range(5):
+            try:
+                r = requests.post(ZAI_ENDPOINT, json=payload, headers=headers, timeout=TIMEOUT_SEC)
+            except requests.RequestException as e:
+                last_err = e
+                time.sleep(1.5 * (2 ** attempt))
+                continue
+            if r.status_code == 429 or 500 <= r.status_code < 600:
+                last_err = RuntimeError(f"Z.ai HTTP {r.status_code}: {r.text[:200]}")
+                # Honor Retry-After if present, else exponential backoff.
+                wait = float(r.headers.get("Retry-After") or 0) or 1.5 * (2 ** attempt)
+                time.sleep(min(wait, 20))
+                continue
+            r.raise_for_status()
+            data = r.json()
+            return data["choices"][0]["message"]["content"]
     raise last_err or RuntimeError("Z.ai chat: exhausted retries")
 
 

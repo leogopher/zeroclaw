@@ -188,7 +188,11 @@ def _format_preview(chat_id: str, terms_data: list[dict]) -> str:
         lines.append(header)
 
         if not senses:
-            lines.append("   ⚠️ no senses found — skipped")
+            err = (d.get("lookup_error") or "").strip()
+            if err:
+                lines.append(f"   ⚠️ lookup failed: {err}")
+            else:
+                lines.append("   ⚠️ no senses found — skipped")
             lines.append("")
             continue
 

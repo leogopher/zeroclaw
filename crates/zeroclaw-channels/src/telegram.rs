@@ -22,7 +22,7 @@ const TELEGRAM_ACK_REACTIONS: &[&str] = &["⚡️", "👌", "👀", "🔥", "�
 // Anki pre-LLM dispatcher (see workspace/skills/anki-cards/PLAN_anki_implementation.md).
 // Messages matching these patterns are routed to the Python dispatcher instead of the LLM.
 // Paths are resolved from `$HOME/.zeroclaw/` at first use.
-const ANKI_DISPATCHER_TIMEOUT_SECS: u64 = 90;
+const ANKI_DISPATCHER_TIMEOUT_SECS: u64 = 300;
 
 fn anki_zeroclaw_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".to_string()))
