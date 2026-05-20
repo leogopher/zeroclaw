@@ -44,8 +44,13 @@ static ANKI_PREVIEW_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
     regex::Regex::new(r"(?i)^(new anki cards|anki cards|add to anki)\b").unwrap()
 });
 static ANKI_CONFIRM_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"(?i)^[a-z][a-z \-]* \d+(,\d+)*(\s*;\s*[a-z][a-z \-]* \d+(,\d+)*)*;?\s*$")
-        .unwrap()
+    // Matches either:
+    //   - `all` (shortcut: add sense 1 of every term in the pending preview)
+    //   - `<term> <ids>[, <ids>...][; <term> <ids>...]` — explicit picks
+    regex::Regex::new(
+        r"(?i)^(all|[a-z][a-z \-]* \d+(,\d+)*(\s*;\s*[a-z][a-z \-]* \d+(,\d+)*)*;?)\s*$",
+    )
+    .unwrap()
 });
 static ANKI_CANCEL_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)^cancel\s*$").unwrap());

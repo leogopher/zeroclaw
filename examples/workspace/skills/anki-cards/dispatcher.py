@@ -29,6 +29,7 @@ if str(THIS_DIR) not in sys.path:
 import lookup as lookup_mod  # noqa: E402
 import ankiconnect as ank  # noqa: E402
 from cloze import cloze  # noqa: E402
+import llm as llm_mod  # noqa: E402
 
 PENDING_DIR = Path.home() / ".zeroclaw" / "anki-pending"
 PENDING_TTL_SEC = 10 * 60
@@ -139,8 +140,8 @@ def _normalize_example(ex: str | None) -> str:
 
 # ─── Preview subcommand ─────────────────────────────────────────────────────
 
-def _lookup_with_flags(term: str) -> dict:
-    data = lookup_mod.lookup(term)
+def _lookup_with_flags(term: str, is_phrase: bool = False) -> dict:
+    data = lookup_mod.lookup(term, is_phrase=is_phrase)
     try:
         existing_ids = ank.find(term)
     except Exception:
@@ -176,10 +177,13 @@ def _format_preview(chat_id: str, terms_data: list[dict]) -> str:
         term = d["term"]
         ipa = d.get("ipa_us") or ""
         senses = d.get("senses") or []
+        is_phrase = bool(d.get("is_phrase"))
         header = f"{t_idx}. {term}"
         if ipa:
             header += f" /{ipa}/"
-        if not d.get("audio_url"):
+        if is_phrase:
+            header += "  · phrase"
+        elif not d.get("audio_url"):
             header += " ⚠️ no audio"
         lines.append(header)
 
@@ -210,7 +214,7 @@ def _format_preview(chat_id: str, terms_data: list[dict]) -> str:
     else:
         hint = f"`{usable_terms[0]} 1;`  (or `{usable_terms[0]} 1,2;` for multiple senses)"
     lines.append(f"Reply like: {hint}")
-    lines.append("Or `cancel` to drop.")
+    lines.append("Or `all` to add sense 1 of every term, `cancel` to drop.")
     return "\n".join(lines).rstrip()
 
 
@@ -221,10 +225,18 @@ def cmd_preview(chat_id: str, message_text: str) -> int:
         print("⚠️ No terms parsed from your message. Example: `New Anki Cards: pace; trait`.")
         return 0
 
+    # Classify words vs phrases up front via Z.ai. The classifier is allowed
+    # to fail — it falls back to "has space ⇒ phrase, else word".
+    try:
+        kinds = llm_mod.classify_terms(terms)
+    except Exception:
+        kinds = {t.lower(): ("phrase" if " " in t else "word") for t in terms}
+
     terms_data: list[dict] = []
     for term in terms:
+        is_phrase = kinds.get(term.lower()) == "phrase"
         try:
-            data = _lookup_with_flags(term)
+            data = _lookup_with_flags(term, is_phrase=is_phrase)
         except Exception as e:
             data = {
                 "term": term,
@@ -233,6 +245,7 @@ def cmd_preview(chat_id: str, message_text: str) -> int:
                 "source": "none",
                 "senses": [],
                 "partial": True,
+                "is_phrase": is_phrase,
                 "existing_sense_indices": [],
                 "lookup_error": str(e),
             }
@@ -288,10 +301,15 @@ def _build_entry(term: str, sense: dict, top: dict) -> dict:
         example_cloze = cloze(term, example) if example else ""
     except Exception:
         example_cloze = example
+    try:
+        meaning_cloze = cloze(term, meaning) if meaning else ""
+    except Exception:
+        meaning_cloze = meaning
     return {
         "word": term,
         "label": sense.get("label") or "",
         "meaning": meaning,
+        "meaning_cloze": meaning_cloze,
         "ipa": top.get("ipa_us") or "",
         "example": example,
         "example_cloze": example_cloze,
@@ -305,11 +323,22 @@ def cmd_confirm(chat_id: str, reply_text: str) -> int:
         print('⚠️ No pending preview (or expired). Send "New Anki Cards: ..." to start over.')
         return 0
 
-    try:
-        picks = parse_reply(reply_text)
-    except ValueError as e:
-        print(f"⚠️ Couldn't parse your reply: {e}. Use format like `pace 1,3; trait 1;`.")
-        return 0
+    if reply_text.strip().lower() == "all":
+        # Shortcut: take sense 1 of every term that has at least one sense.
+        picks = {
+            d["term"].lower(): [1]
+            for d in pending.get("terms", [])
+            if d.get("senses")
+        }
+        if not picks:
+            print("⚠️ Nothing to add — no senses found for any term.")
+            return 0
+    else:
+        try:
+            picks = parse_reply(reply_text)
+        except ValueError as e:
+            print(f"⚠️ Couldn't parse your reply: {e}. Use `all` or `pace 1,3; trait 1;`.")
+            return 0
 
     terms_by_key = {d["term"].lower(): d for d in pending.get("terms", [])}
 
@@ -379,7 +408,11 @@ def cmd_confirm(chat_id: str, reply_text: str) -> int:
         for term, reason in skipped:
             lines.append(f" • {term} — {reason}")
 
-    if sync_status != "ok":
+    if sync_status == "needs_full_upload":
+        lines.append("")
+        lines.append("⚠️ Schema changed — local has the new cards but AnkiWeb is behind.")
+        lines.append("Run: `curl -s http://127.0.0.1:8765 -d '{\"action\":\"fullUpload\",\"version\":6}'`")
+    elif sync_status != "ok":
         lines.append("")
         lines.append(f"⚠️ sync {sync_status}")
 
