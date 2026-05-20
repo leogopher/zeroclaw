@@ -232,13 +232,18 @@ def cmd_preview(chat_id: str, message_text: str) -> int:
     except Exception:
         kinds = {t.lower(): ("phrase" if " " in t else "word") for t in terms}
 
-    terms_data: list[dict] = []
-    for term in terms:
+    # Run lookups concurrently — they're pure I/O (Cambridge / Free Dict /
+    # Z.ai), so threads scale linearly with worker count up to provider
+    # rate limits. Cap workers so we don't hammer Z.ai with 16 phrase
+    # generations at once.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _safe_lookup(term: str) -> dict:
         is_phrase = kinds.get(term.lower()) == "phrase"
         try:
-            data = _lookup_with_flags(term, is_phrase=is_phrase)
+            return _lookup_with_flags(term, is_phrase=is_phrase)
         except Exception as e:
-            data = {
+            return {
                 "term": term,
                 "ipa_us": None,
                 "audio_url": None,
@@ -249,7 +254,10 @@ def cmd_preview(chat_id: str, message_text: str) -> int:
                 "existing_sense_indices": [],
                 "lookup_error": str(e),
             }
-        terms_data.append(data)
+
+    max_workers = max(1, min(6, len(terms)))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        terms_data = list(pool.map(_safe_lookup, terms))
 
     # Persist pending state even when everything was "already in deck" — user
     # may re-pick a duplicate to force-add.
