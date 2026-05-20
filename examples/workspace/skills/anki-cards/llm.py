@@ -21,7 +21,11 @@ from pathlib import Path
 import requests
 
 CONFIG_PATH = Path.home() / ".zeroclaw" / "config.toml"
-ZAI_ENDPOINT = "https://api.z.ai/api/paas/v4/chat/completions"
+# Z.ai GLM Coding Plan endpoint — same base the Rust daemon's `zai` provider
+# alias resolves to (see ZAI_GLOBAL_BASE_URL in zeroclaw-providers/src/lib.rs).
+# The bare `/api/paas/v4` path goes to the pay-as-you-go account, which has a
+# separate, empty balance.
+ZAI_ENDPOINT = "https://api.z.ai/api/coding/paas/v4/chat/completions"
 ZAI_MODEL = os.environ.get("ZEROCLAW_ZAI_MODEL", "glm-5")
 TIMEOUT_SEC = 30
 
