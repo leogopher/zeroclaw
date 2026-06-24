@@ -3258,9 +3258,10 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             AnkiDispatchKind::Cancel => "cancel",
         };
 
-        tracing::info!(
-            chat_id = %chat_id,
-            kind = ?kind,
+        ::zeroclaw_log::record!(
+            INFO,
+            ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                .with_attrs(::serde_json::json!({"chat_id": chat_id, "kind": format!("{kind:?}")})),
             "Anki dispatcher intercepting Telegram message"
         );
 
@@ -3278,9 +3279,14 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         let child = match spawn_result {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    python = %ANKI_DISPATCHER_PYTHON.display(),
+                ::zeroclaw_log::record!(
+                    ERROR,
+                    ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                        .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                        .with_attrs(::serde_json::json!({
+                            "error": e.to_string(),
+                            "python": ANKI_DISPATCHER_PYTHON.display().to_string(),
+                        })),
                     "Failed to spawn Anki dispatcher (check venv path)"
                 );
                 let _ = self
@@ -3301,7 +3307,13 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             {
                 Ok(Ok(o)) => o,
                 Ok(Err(e)) => {
-                    tracing::error!(error = %e, "Anki dispatcher I/O error");
+                    ::zeroclaw_log::record!(
+                        ERROR,
+                        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                            .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                            .with_attrs(::serde_json::json!({"error": e.to_string()})),
+                        "Anki dispatcher I/O error"
+                    );
                     let _ = self
                         .send_text_chunks(
                             "⚠️ Anki dispatcher error — see logs.",
@@ -3312,8 +3324,12 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                     return true;
                 }
                 Err(_) => {
-                    tracing::error!(
-                        "Anki dispatcher timed out after {ANKI_DISPATCHER_TIMEOUT_SECS}s"
+                    ::zeroclaw_log::record!(
+                        ERROR,
+                        ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                            .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                            .with_attrs(::serde_json::json!({"timeout_secs": ANKI_DISPATCHER_TIMEOUT_SECS})),
+                        "Anki dispatcher timed out"
                     );
                     let _ = self
                         .send_text_chunks(
@@ -3328,9 +3344,14 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::error!(
-                status = ?output.status,
-                stderr = %stderr,
+            ::zeroclaw_log::record!(
+                ERROR,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                    .with_attrs(::serde_json::json!({
+                        "status": format!("{:?}", output.status),
+                        "stderr": stderr.to_string(),
+                    })),
                 "Anki dispatcher exited non-zero"
             );
             let _ = self
@@ -3345,7 +3366,12 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if stdout.is_empty() {
-            tracing::warn!("Anki dispatcher produced empty stdout; sending placeholder");
+            ::zeroclaw_log::record!(
+                WARN,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Unknown),
+                "Anki dispatcher produced empty stdout; sending placeholder"
+            );
             let _ = self
                 .send_text_chunks("✅ Done.", &chat_id, thread_id.as_deref())
                 .await;
@@ -3353,7 +3379,13 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             .send_text_chunks(&stdout, &chat_id, thread_id.as_deref())
             .await
         {
-            tracing::error!(error = %e, "Failed to deliver Anki dispatcher output to Telegram");
+            ::zeroclaw_log::record!(
+                ERROR,
+                ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Fail)
+                    .with_outcome(::zeroclaw_log::EventOutcome::Failure)
+                    .with_attrs(::serde_json::json!({"error": e.to_string()})),
+                "Failed to deliver Anki dispatcher output to Telegram"
+            );
         }
         true
     }
