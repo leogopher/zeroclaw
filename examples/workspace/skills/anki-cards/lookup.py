@@ -294,10 +294,21 @@ def _fetch_freedict(term: str) -> dict | None:
     }
 
 
-def lookup(term: str, use_cache: bool = True) -> dict:
+def lookup(term: str, use_cache: bool = True, is_phrase: bool = False) -> dict:
+    """Look up a word or phrase.
+
+    For words: Cambridge → Free Dictionary fallback for missing senses/IPA/audio.
+    For phrases: Cambridge → LLM (Z.ai) fallback. Free Dictionary is skipped
+    (it doesn't index multi-word entries usefully). Audio is always None for
+    phrases — phrase cards are voiceless by design.
+    """
     if use_cache:
         cached = _cache_get(term)
         if cached is not None:
+            cached["is_phrase"] = is_phrase
+            if is_phrase:
+                # Audio is suppressed for phrases even if the cache picked some up.
+                cached["audio_url"] = None
             return cached
 
     result: dict = {
@@ -307,25 +318,41 @@ def lookup(term: str, use_cache: bool = True) -> dict:
         "source": "none",
         "senses": [],
         "partial": True,
+        "is_phrase": is_phrase,
     }
 
     cam = _fetch_cambridge(term)
     if cam:
         result.update(cam)
         result["term"] = term
+        result["is_phrase"] = is_phrase
 
-    # Fill gaps (IPA, audio, or senses) from Free Dictionary.
-    if not result["senses"] or not result["ipa_us"] or not result["audio_url"]:
-        fd = _fetch_freedict(term)
-        if fd:
-            if not result["senses"]:
-                result["senses"] = fd["senses"]
-                if result["source"] == "none":
-                    result["source"] = fd["source"]
-            if not result["ipa_us"] and fd.get("ipa_us"):
-                result["ipa_us"] = fd["ipa_us"]
-            if not result["audio_url"] and fd.get("audio_url"):
-                result["audio_url"] = fd["audio_url"]
+    if is_phrase:
+        # Phrases never get audio, regardless of what Cambridge served.
+        result["audio_url"] = None
+        if not result["senses"]:
+            try:
+                import llm as _llm  # type: ignore
+                gen = _llm.generate_phrase(term)
+                result["senses"] = gen["senses"]
+                result["source"] = gen["source"]
+                if not result.get("ipa_us") and gen.get("ipa_us"):
+                    result["ipa_us"] = gen["ipa_us"]
+            except Exception as e:
+                result["lookup_error"] = f"LLM phrase generation failed: {e}"
+    else:
+        # Word path: fill gaps from Free Dictionary.
+        if not result["senses"] or not result["ipa_us"] or not result["audio_url"]:
+            fd = _fetch_freedict(term)
+            if fd:
+                if not result["senses"]:
+                    result["senses"] = fd["senses"]
+                    if result["source"] == "none":
+                        result["source"] = fd["source"]
+                if not result["ipa_us"] and fd.get("ipa_us"):
+                    result["ipa_us"] = fd["ipa_us"]
+                if not result["audio_url"] and fd.get("audio_url"):
+                    result["audio_url"] = fd["audio_url"]
 
     result["partial"] = not bool(result["senses"])
 

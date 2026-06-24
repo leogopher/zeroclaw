@@ -1,8 +1,8 @@
 ---
 name: anki-cards
-description: Multi-sense English vocabulary → Anki flashcards. Triggered by "New Anki Cards", "Anki Cards", or "Add to Anki". Handled entirely by a deterministic Python dispatcher invoked BEFORE the LLM — no model prompting, no hallucinated previews. User picks which sense(s) of each word to learn; multiple cards per word are supported with a disambiguation label on Card 1.
-version: 0.2.0
-tags: [anki, english, vocabulary, flashcards]
+description: Multi-sense English vocabulary → Anki flashcards. Triggered by "New Anki Cards", "Anki Cards", or "Add to Anki". Words and phrases can be mixed in one batch — the dispatcher classifies each term and routes words to Cambridge/Free-Dictionary and phrases to Cambridge with a Z.ai LLM fallback for entries Cambridge doesn't index. Handled by a deterministic Python dispatcher invoked BEFORE the LLM — no model prompting, no hallucinated previews. User picks which sense(s) of each term to learn; multiple cards per term are supported with a disambiguation label on Card 1.
+version: 0.3.0
+tags: [anki, english, vocabulary, flashcards, phrases]
 ---
 
 # Anki Cards Skill
@@ -28,15 +28,20 @@ stray "5 apples" in normal chat falls through to the LLM.
 
 ## Two-phase flow
 
-### Phase A — Preview (LLM-free)
+### Phase A — Preview (LLM-assisted only for phrase detection / generation)
 
-1. User sends `New Anki Cards: pace; trait`.
-2. Dispatcher parses term list, calls `lookup.py` for each term (up to 5
-   senses per term from Cambridge, with Free Dictionary API fallback).
-3. For each sense, checks if an existing deck note already has that
+1. User sends `New Anki Cards: pace; trait; fed up with; slipped my mind`.
+2. Dispatcher parses the term list and asks Z.ai to classify each entry as
+   `word` or `phrase` (fallback heuristic: contains a space ⇒ phrase).
+3. For each term, calls `lookup.py`:
+   - **words** → Cambridge → Free Dictionary fallback (5 senses cap).
+   - **phrases** → Cambridge → Z.ai LLM fallback. Free Dictionary is
+     skipped (it doesn't index multi-word entries). Phrase cards never
+     get audio; IPA comes from Cambridge if available, else from the LLM.
+4. For each sense, checks if an existing deck note already has that
    meaning → flags `↺ Already in deck`.
-4. Writes `~/.zeroclaw/anki-pending/<chat_id>.json` (TTL 10 min).
-5. Prints preview to Telegram:
+5. Writes `~/.zeroclaw/anki-pending/<chat_id>.json` (TTL 10 min).
+6. Prints preview to Telegram:
 
    ```
    🗂 Preview — reply to add
@@ -46,16 +51,18 @@ stray "5 apples" in normal chat falls through to the LLM.
           _a slow / fast pace_
       (2) [noun] while moving quickly
           _It can be scary for a defender when you see an attacker…_
-      (3) [noun] the rate at which something happens
       …
 
-   2. trait /treɪt/
-      (1) [noun] a particular characteristic that can produce…
-          _His sense of humour is one of his better traits._
-      …
+   2. fed up with /fɛd ʌp wɪð/  · phrase
+      (1) [phrase] annoyed or bored, and wanting something to change
+          _I'm fed up with my job._
 
-   Reply like: `pace 1,3; trait 1;`
-   Or `cancel` to drop.
+   3. slipped my mind /slɪpt maɪ maɪnd/  · phrase
+      (1) [phrase] forgotten temporarily
+          _Sorry I didn't call — it completely slipped my mind._
+
+   Reply like: `pace 1,3; fed up with 1;`
+   Or `all` to add sense 1 of every term, `cancel` to drop.
    ```
 
 ### Phase B — Confirm or cancel (LLM-free)
@@ -77,16 +84,19 @@ stray "5 apples" in normal chat falls through to the LLM.
 
 ## Paths
 
-- Skill dir: `<HOME>/.zeroclaw/workspace/skills/anki-cards/`
+- Skill dir: `/home/shaba/.zeroclaw/workspace/skills/anki-cards/`
 - Venv python: `.venv/bin/python` (BeautifulSoup, requests)
-- Helpers: `lookup.py`, `dispatcher.py`, `ankiconnect.py`, `cloze.py`
+- Helpers: `lookup.py`, `dispatcher.py`, `ankiconnect.py`, `cloze.py`, `llm.py`
+- LLM provider: Z.ai (`glm-5`), key read from `~/.zeroclaw/config.toml`
+  `[[model_routes]]` with `provider = "zai"`. `ZAI_API_KEY` env var overrides.
 - Lookup cache: `~/.zeroclaw/cache/anki/v2_<slug>.json` (30-day TTL)
 - Pending state: `~/.zeroclaw/anki-pending/<chat_id>.json` (10-min TTL)
 
 ## Anki model
 
-`ZeroClaw English 3-Card` — 7 fields:
-`Word`, `Meaning`, `IPA`, `Example`, `ExampleCloze`, `Audio`, `Disambiguation`
+`ZeroClaw English 3-Card` — 8 fields:
+`Word`, `Meaning`, `IPA`, `Example`, `ExampleCloze`, `Audio`,
+`Disambiguation`, `MeaningCloze`.
 
 Three templates:
 
@@ -98,6 +108,11 @@ Three templates:
 
 `Disambiguation` renders only when non-empty — polysemous entries (e.g.
 `pace (speed)` vs `pace (step)`) and single-sense entries render cleanly.
+
+**Words get 3 cards** (Audio is populated → Card 3 is generated).
+**Phrases get 2 cards** (Audio is empty → Anki auto-suppresses Card 3,
+since its front template `{{Audio}}` produces no output). No model change
+needed to support phrases.
 
 ## Fix Anki (legacy LLM path)
 
@@ -117,7 +132,7 @@ delete the wrong card manually via Anki GUI).
 ## Disabling the dispatcher
 
 Set `anki_dispatcher_enabled = false` under `[channels_config.telegram]`
-in `<HOME>/.zeroclaw/config.toml`, restart the daemon. All Anki
+in `/home/shaba/.zeroclaw/config.toml`, restart the daemon. All Anki
 messages then go to the LLM — which, without an updated skill definition,
 will reply conversationally. (There is no up-to-date LLM fallback for
 the new flow; disable at your own risk.)
